@@ -22,6 +22,14 @@ but that is a goal.
 
 Instructions are for Linux/Mac; they will need to be adapted to work on Windows.
 
+### vcpkg
+
+Clone the repository with submodules:
+
+```sh
+git clone https://github.com/kainino0x/webgpu-cross-platform-demo --recursive
+```
+
 ### Native build
 
 Build has been tested on Linux/Mac/Win10.
