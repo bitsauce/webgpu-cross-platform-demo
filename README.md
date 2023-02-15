@@ -32,7 +32,7 @@ git clone https://github.com/kainino0x/webgpu-cross-platform-demo --recursive
 
 ### Native build
 
-Build has been tested on Linux/Mac/Win10.
+Then run the following script (tested on Linux, Mac, and Windows via GitBash)
 
 ```sh
 ./setup_native_build.sh
