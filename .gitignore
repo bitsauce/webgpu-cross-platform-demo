@@ -2,3 +2,5 @@
 /third_party/dawn/
 .vscode
 .idea
+.clang-format
+cmake-build-*
