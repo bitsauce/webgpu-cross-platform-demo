@@ -13,7 +13,8 @@ else
     git fetch origin
 fi
 
-git checkout --detach 4489109c86c64330dc7005cc9d279370cce7a71a --
+# Use the most recent version of dawn
+git checkout --detach origin/main --
 
-cp scripts/standalone.gclient .gclient
-gclient sync
+# Fetch dependencies using the fetch script (works without gsync login)
+python tools/fetch_dawn_dependencies.py
