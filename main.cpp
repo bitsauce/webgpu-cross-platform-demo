@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <memory>
 #include <cstring>
+#include <array>
 
 static wgpu::Instance instance;
 static wgpu::Device device;
@@ -41,8 +42,8 @@ static int testsCompleted = 0;
 
 wgpu::SwapChain swapChain;
 wgpu::TextureView canvasDepthStencilView;
-const uint32_t kWidth = 300;
-const uint32_t kHeight = 150;
+const uint32_t kWidth = 1270;
+const uint32_t kHeight = 720;
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -334,7 +335,17 @@ void GetDevice(void (*callback)(wgpu::Device)) {
         }
         assert(status == WGPURequestAdapterStatus_Success);
 
-        adapter.RequestDevice(nullptr, [](WGPURequestDeviceStatus status, WGPUDevice cDevice, const char* message, void* userdata) {
+        const char* const enabledToggles[] = {"skip_validation"};
+        wgpu::DawnTogglesDescriptor deviceTogglesDesc;
+        deviceTogglesDesc.enabledToggles = enabledToggles;
+        deviceTogglesDesc.enabledToggleCount = 1;
+        wgpu::DeviceDescriptor devDesc;
+        const auto features = std::array{wgpu::FeatureName::IndirectFirstInstance};
+        devDesc.requiredFeatureCount = features.size();
+        devDesc.requiredFeatures = features.data();
+        //devDesc.nextInChain = &deviceTogglesDesc;
+
+        adapter.RequestDevice(&devDesc, [](WGPURequestDeviceStatus status, WGPUDevice cDevice, const char* message, void* userdata) {
             if (message) {
                 printf("RequestDevice: %s\n", message);
             }
@@ -382,16 +393,42 @@ void GetDevice(void (*callback)(wgpu::Device)) {
 
 static const char shaderCode[] = R"(
     @vertex
-    fn main_v(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {
+    fn main_v(
+        @builtin(vertex_index) idx: u32,
+        @builtin(instance_index) inst_idx: u32
+    ) -> @builtin(position) vec4<f32> {
         var pos = array<vec2<f32>, 3>(
-            vec2<f32>(0.0, 0.5), vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, -0.5));
-        return vec4<f32>(pos[idx], 0.0, 1.0);
+            vec2<f32>(0.0, 0.5),
+            vec2<f32>(-0.5, -0.5),
+            vec2<f32>(0.5, -0.5));
+        var inst_pos = array<vec2<f32>, 6>(
+            vec2<f32>(-0.5, 0.5),
+            vec2<f32>(0.0, 0.5),
+            vec2<f32>(0.5, 0.5),
+            vec2<f32>(-0.5, -0.5),
+            vec2<f32>(0.0, -0.5),
+            vec2<f32>(0.5, -0.5));
+        return vec4<f32>(inst_pos[inst_idx] + pos[idx] * 0.25, 0.0, 1.0);
     }
     @fragment
     fn main_f() -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.502, 1.0, 1.0); // 0x80/0xff ~= 0.502
     }
 )";
+
+struct IndirectIndexedDrawArgs
+{
+	uint32_t indexCount;
+	uint32_t instanceCount;
+	int32_t firstIndex;
+	int32_t baseVertex;
+	uint32_t firstInstance;
+};
+
+wgpu::Buffer drawArgsBuf;
+wgpu::Buffer indexBuf;
+
+static_assert(sizeof(IndirectIndexedDrawArgs) == 20, "Unexpected size");
 
 void init() {
     device.SetUncapturedErrorCallback(
@@ -449,6 +486,47 @@ void init() {
         descriptor.depthStencil = &depthStencilState;
         pipeline = device.CreateRenderPipeline(&descriptor);
     }
+    {
+        static const auto indirectDrawArgs = std::array {
+            IndirectIndexedDrawArgs {
+                .indexCount = 3,
+                .instanceCount = 3,
+                .firstIndex = 0,
+                .baseVertex = 0,
+                .firstInstance = 0,
+            },
+            IndirectIndexedDrawArgs {
+                .indexCount = 3,
+                .instanceCount = 3,
+                .firstIndex = 0,
+                .baseVertex = 0,
+                .firstInstance = 3,
+            },
+        };
+        static const auto bufSize = sizeof(IndirectIndexedDrawArgs) * 2;
+
+        wgpu::BufferDescriptor argsBufDesc;
+        argsBufDesc.size = bufSize;
+        argsBufDesc.usage = wgpu::BufferUsage::Indirect | wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::Storage;
+        argsBufDesc.mappedAtCreation = true;
+        drawArgsBuf = device.CreateBuffer(&argsBufDesc);
+        auto* mem = drawArgsBuf.GetMappedRange();
+        memcpy(mem, indirectDrawArgs.data(), bufSize);
+        drawArgsBuf.Unmap();
+    }
+    {
+        static const auto bufData = std::array<uint32_t, 3> { 0, 1, 2 };
+        static const auto bufSize = sizeof(uint32_t) * bufData.size();
+
+        wgpu::BufferDescriptor bufDesc;
+        bufDesc.size = bufSize;
+        bufDesc.usage = wgpu::BufferUsage::Index;
+        bufDesc.mappedAtCreation = true;
+        indexBuf = device.CreateBuffer(&bufDesc);
+        auto* mem = indexBuf.GetMappedRange();
+        memcpy(mem, bufData.data(), bufSize);
+        indexBuf.Unmap();
+    }
 }
 
 // The depth stencil attachment isn't really needed to draw the triangle
@@ -479,7 +557,9 @@ void render(wgpu::TextureView view, wgpu::TextureView depthStencilView) {
         {
             wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderpass);
             pass.SetPipeline(pipeline);
-            pass.Draw(3);
+            pass.SetIndexBuffer(indexBuf, wgpu::IndexFormat::Uint32);
+            pass.DrawIndexedIndirect(drawArgsBuf, 0);
+            pass.DrawIndexedIndirect(drawArgsBuf, sizeof(IndirectIndexedDrawArgs));
             pass.End();
         }
         commands = encoder.Finish();
