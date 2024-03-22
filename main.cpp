@@ -77,8 +77,6 @@ void GetDevice(void (*callback)(wgpu::Device)) {
 #include <dawn/dawn_proc.h>
 #include <dawn/native/DawnNative.h>
 
-static std::unique_ptr<dawn::native::Instance> instance;
-
 #ifdef DEMO_USE_GLFW
 
 // Native window related
@@ -324,45 +322,61 @@ const char* AdapterTypeName(wgpu::AdapterType t)
 }
 
 void GetDevice(void (*callback)(wgpu::Device)) {
-    instance = std::make_unique<dawn::native::Instance>();
-    instance->DiscoverDefaultAdapters();
-
-    auto adapters = instance->GetAdapters();
-
-    // Sort adapters by adapterType, 
-    std::sort(adapters.begin(), adapters.end(), [](const dawn::native::Adapter& a, const dawn::native::Adapter& b){
-        wgpu::AdapterProperties pa, pb;
-        a.GetProperties(&pa);
-        b.GetProperties(&pb);
-        
-        if (pa.adapterType != pb.adapterType) {
-            // Put GPU adapter (D3D, Vulkan, Metal) at front and CPU adapter at back.
-            return pa.adapterType < pb.adapterType;
+    instance.RequestAdapter(nullptr, [](WGPURequestAdapterStatus status, WGPUAdapter cAdapter, const char* message, void* userdata) {
+        wgpu::Adapter adapter = wgpu::Adapter::Acquire(cAdapter);
+        if (message) {
+            printf("RequestAdapter: %s\n", message);
         }
+        if (status == WGPURequestAdapterStatus_Unavailable) {
+            printf("WebGPU unavailable; exiting cleanly\n");
+            // exit(0) (rather than emscripten_force_exit(0)) ensures there is no dangling keepalive.
+            exit(0);
+        }
+        assert(status == WGPURequestAdapterStatus_Success);
 
-        return GetBackendPriority(pa.backendType) < GetBackendPriority(pb.backendType);
-    });
-    // Simply pick the first adapter in the sorted list.
-    dawn::native::Adapter backendAdapter = adapters[0];
+        adapter.RequestDevice(nullptr, [](WGPURequestDeviceStatus status, WGPUDevice cDevice, const char* message, void* userdata) {
+            if (message) {
+                printf("RequestDevice: %s\n", message);
+            }
+            assert(status == WGPURequestDeviceStatus_Success);
 
-    printf("Available adapters sorted by their Adapter type, with GPU adapters listed at front and preferred:\n\n");
-    printf(" [Selected] -> ");
-    for (auto&& a : adapters) {
-        wgpu::AdapterProperties p;
-        a.GetProperties(&p);
-        printf(
-            "* %s (%s)\n"
-            "    deviceID=%u, vendorID=0x%x, BackendType::%s, AdapterType::%s\n",
-        p.name, p.driverDescription, p.deviceID, p.vendorID,
-        BackendTypeName(p.backendType), AdapterTypeName(p.adapterType));
-    }
-    printf("\n\n");
+            wgpu::Device device = wgpu::Device::Acquire(cDevice);
+            reinterpret_cast<void (*)(wgpu::Device)>(userdata)(device);
+        }, userdata);
+    }, reinterpret_cast<void*>(callback));
 
-    wgpu::Device device = wgpu::Device::Acquire(backendAdapter.CreateDevice());
-    DawnProcTable procs = dawn::native::GetProcs();
-
-    dawnProcSetProcs(&procs);
-    callback(device);
+//    auto adapters = instance.GetAdapters();
+//
+//    // Sort adapters by adapterType,
+//    std::sort(adapters.begin(), adapters.end(), [](const dawn::native::Adapter& a, const dawn::native::Adapter& b){
+//        wgpu::AdapterProperties pa, pb;
+//        a.GetProperties(&pa);
+//        b.GetProperties(&pb);
+//
+//        if (pa.adapterType != pb.adapterType) {
+//            // Put GPU adapter (D3D, Vulkan, Metal) at front and CPU adapter at back.
+//            return pa.adapterType < pb.adapterType;
+//        }
+//
+//        return GetBackendPriority(pa.backendType) < GetBackendPriority(pb.backendType);
+//    });
+//    // Simply pick the first adapter in the sorted list.
+//    dawn::native::Adapter backendAdapter = adapters[0];
+//
+//    printf("Available adapters sorted by their Adapter type, with GPU adapters listed at front and preferred:\n\n");
+//    printf(" [Selected] -> ");
+//    for (auto&& a : adapters) {
+//        wgpu::AdapterProperties p;
+//        a.GetProperties(&p);
+//        printf(
+//            "* %s (%s)\n"
+//            "    deviceID=%u, vendorID=0x%x, BackendType::%s, AdapterType::%s\n",
+//        p.name, p.driverDescription, p.deviceID, p.vendorID,
+//        BackendTypeName(p.backendType), AdapterTypeName(p.adapterType));
+//    }
+//    printf("\n\n");
+//
+//    wgpu::Device device = wgpu::Device::Acquire(backendAdapter.CreateDevice());
 }
 #endif  // __EMSCRIPTEN__
 
@@ -710,7 +724,7 @@ void run() {
     emscripten_set_main_loop(frame, 0, false);
 #elif defined(DEMO_USE_GLFW)
     setup_window();
-    surface = window_init_surface(instance->Get(), native_window);
+    surface = window_init_surface(instance.Get(), native_window);
     wgpu_setup_swap_chain();
     while (!window_should_close(native_window)) {
         glfwPollEvents();
@@ -724,6 +738,11 @@ void run() {
 }
 
 int main() {
+#ifndef __EMSCRIPTEN__
+    DawnProcTable procs = dawn::native::GetProcs();
+    dawnProcSetProcs(&procs);
+#endif
+
     instance = wgpu::CreateInstance();
     GetDevice([](wgpu::Device dev) {
         device = dev;
